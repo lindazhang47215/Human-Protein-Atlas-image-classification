@@ -1,21 +1,9 @@
-# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-# NOTICE: This work was derived from tensorflow/examples/image_retraining
-# and modified to use TensorFlow Hub modules.
+# This work is derived from the example code at:
+# https://github.com/tensorflow/hub/raw/master/examples/image_retraining/retrain.py,
+# and modified to train the image classification problem for Human Protein Atlas.
+# A tutorial for the original example code can be found at:
+# https://www.tensorflow.org/hub/tutorials/image_retraining.
 
-# pylint: disable=line-too-long
 """Simple transfer learning with image modules from TensorFlow Hub.
 
 This example shows how to train an image classifier based on any
@@ -25,102 +13,14 @@ See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
 for more options.
 
 The top layer receives as input a 2048-dimensional vector (assuming
-Inception V3) for each image. We train a softmax layer on top of this
-representation. If the softmax layer contains N labels, this corresponds
-to learning N + 2048*N model parameters for the biases and weights.
-
-Here's an example, which assumes you have a folder containing class-named
-subfolders, each full of images for each label. The example folder flower_photos
-should have a structure like this:
-
-~/flower_photos/daisy/photo1.jpg
-~/flower_photos/daisy/photo2.jpg
-...
-~/flower_photos/rose/anotherphoto77.jpg
-...
-~/flower_photos/sunflower/somepicture.jpg
-
-The subfolder names are important, since they define what label is applied to
-each image, but the filenames themselves don't matter. (For a working example,
-download http://download.tensorflow.org/example_images/flower_photos.tgz
-and run  tar xzf flower_photos.tgz  to unpack it.)
-
-Once your images are prepared, and you have pip-installed tensorflow-hub and
-a sufficiently recent version of tensorflow, you can run the training with a
-command like this:
+Inception V3) for each image. We train a FC layer followed by a 
+softmax layer on top of this representation. The softmax layer 
+contains N=28 labels.
 
 ```bash
 python retrain.py --image_dir ~/flower_photos
 ```
-
-You can replace the image_dir argument with any folder containing subfolders of
-images. The label for each image is taken from the name of the subfolder it's
-in.
-
-This produces a new model file that can be loaded and run by any TensorFlow
-program, for example the tensorflow/examples/label_image sample code.
-
-By default this script will use the highly accurate, but comparatively large and
-slow Inception V3 model architecture. It's recommended that you start with this
-to validate that you have gathered good training data, but if you want to deploy
-on resource-limited platforms, you can try the `--tfhub_module` flag with a
-Mobilenet model. For more information on Mobilenet, see
-https://research.googleblog.com/2017/06/mobilenets-open-source-models-for.html
-
-For example:
-
-Run floating-point version of Mobilenet:
-
-```bash
-python retrain.py --image_dir ~/flower_photos \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/feature_vector/1
-```
-
-Run Mobilenet, instrumented for quantization:
-
-```bash
-python retrain.py --image_dir ~/flower_photos/ \
-    --tfhub_module https://tfhub.dev/google/imagenet/mobilenet_v1_100_224/quantops/feature_vector/1
-```
-
-These instrumented models can be converted to fully quantized mobile models via
-TensorFlow Lite.
-
-There are different Mobilenet models to choose from, with a variety of file
-size and latency options.
-  - The first number can be '100', '075', '050', or '025' to control the number
-    of neurons (activations of hidden layers); the number of weights (and hence
-    to some extent the file size and speed) shrinks with the square of that
-    fraction.
-  - The second number is the input image size. You can choose '224', '192',
-    '160', or '128', with smaller sizes giving faster speeds.
-
-To use with TensorBoard:
-
-By default, this script will log summaries to /tmp/retrain_logs directory
-
-Visualize the summaries with this command:
-
-tensorboard --logdir /tmp/retrain_logs
-
-To use with Tensorflow Serving, run this tool with --saved_model_dir set
-to some increasingly numbered export location under the model base path, e.g.:
-
-```bash
-python retrain.py (... other args as before ...) \
-    --saved_model_dir=/tmp/saved_models/$(date +%s)/
-tensorflow_model_server --port=9000 --model_name=my_image_classifier \
-    --model_base_path=/tmp/saved_models/
-```
 """
-# pylint: enable=line-too-long
-
-
-# changed loss function 
-
-
-
-
 
 from __future__ import absolute_import
 from __future__ import division
@@ -139,8 +39,6 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
 
-
-# 
 import pandas as pd 
 import os, sys, datetime, io
 import matplotlib.pyplot as plt 
@@ -150,9 +48,7 @@ from PIL import Image
 import json
 import scipy.io as sio
 import random
-from data_handler_transfer import DataHandler
-
-# 
+from data_handler_transfer_learning import DataHandler
 
 FLAGS = None
 
@@ -168,6 +64,16 @@ FAKE_QUANT_OPS = ('FakeQuantWithMinMaxVars',
 
 
 def f1(y_true, y_pred):
+  """Calculate the F1 score
+  
+  Args:
+    y_true: the y-labels, dimension [batch_size, num_classes(=28)]
+    y_pred: the final_tensor, in the range of (0,1), of dimension 
+            [batch_size, num_classes(=28)]
+  
+  Returns: 
+    the macro F1 score, which is the F1 scores averaged over all the classes
+  """
   y_pred = tf.round(y_pred)
 
   tp = tf.reduce_sum(tf.cast(y_true*y_pred, tf.float32), axis=0)
@@ -183,7 +89,18 @@ def f1(y_true, y_pred):
   return tf.reduce_mean(f1)
 
 def f1_loss(y_true, y_pred):
+  """Calculate the F1 loss based on F1 score 
+  In calculating the F1 loss, do not round y_pred to ensure that 
+  the f1_loss is differentiable with respect to y_pred
 
+  Args:
+    y_true: the y-labels, dimension [batch_size, num_classes(=28)]
+    y_pred: the final_tensor, in the range of (0,1), of dimension 
+            [batch_size, num_classes(=28)]
+  
+  Returns: 
+    the macro F1 score, which is the F1 scores averaged over all the classes
+  """
   tp = tf.reduce_sum(tf.cast(y_true*y_pred, tf.float32), axis=0)
   tn = tf.reduce_sum(tf.cast((1-y_true)*(1-y_pred), tf.float32), axis=0)
   fp = tf.reduce_sum(tf.cast((1-y_true)*y_pred, tf.float32), axis=0)
@@ -196,6 +113,7 @@ def f1_loss(y_true, y_pred):
   f1 = tf.where(tf.is_nan(f1), tf.zeros_like(f1), f1)
   return 1 - tf.reduce_mean(f1)
 
+# The following function is not used to create the metadata
 def create_image_lists(image_dir, testing_percentage, validation_percentage):
   """Builds a list of training images from the file system.
 
@@ -281,7 +199,6 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
     }
   return result
 
-
 def get_image_path(image_lists, label_name, index, image_dir, category):
   """Returns a path to an image for a label at the given index.
 
@@ -329,7 +246,6 @@ def get_bottleneck_path(image_lists, label_name, index, bottleneck_dir,
                  .replace(':', '~').replace('\\', '~'))  # Windows paths.
   return get_image_path(image_lists, label_name, index, bottleneck_dir,
                         category) + '_' + module_name + '.txt'
-
 
 def create_module_graph(module_spec):
   """Creates a graph and loads Hub Module into it.
@@ -396,7 +312,7 @@ def create_bottleneck_file(bottleneck_path, image_lists, label_name, index,
   """Create a single bottleneck file."""
   tf.logging.info('Creating bottleneck at ' + bottleneck_path)
   image_path = image_lists[index]['path']
-  # print('create_bottleneck_file: ', image_path)
+
   image_data = dh.load_image(image_path)
   image_data = np.array([image_data])
 
@@ -507,14 +423,15 @@ def cache_bottlenecks(sess, image_lists, image_dir, bottleneck_dir,
   how_many_bottlenecks = 0
   ensure_dir_exists(bottleneck_dir)
 
-
   for index, example in enumerate(image_lists):
-    # get path and labels
+    # get path and labels from the attributes of the example
     file_path = example['path']
     labels = example['labels']
     label_name = '_'.join([str(label) for label in labels])
 
-    # get category
+    # get category: attribute the example to one of the categories based 
+    # on the percentages, and then save the category as an attribute 
+    # of the example (i.e. image_lists[index]['category'])
     hash_name = re.sub(r'_nohash_.*$', '', file_path)
     hash_name_hashed = hashlib.sha1(tf.compat.as_bytes(hash_name)).hexdigest()
     percentage_hash = ((int(hash_name_hashed, 16) %
@@ -526,7 +443,6 @@ def cache_bottlenecks(sess, image_lists, image_dir, bottleneck_dir,
       category = 'testing'
     else:
       category = 'training'
-
     image_lists[index]['category'] = category
     
     get_or_create_bottleneck(
@@ -572,15 +488,16 @@ def get_random_cached_bottlenecks(sess, image_lists, how_many, category,
   bottlenecks = []
   ground_truths = []
   filenames = []
+  # Get a batch of examples if the batch size is specified (how_many >= 0).
   if how_many >= 0:
     # Retrieve a random sample of bottlenecks.
     for unused_i in range(how_many):
-      index = random.randrange(len(image_lists) )#+ 1)
+      index = random.randrange(len(image_lists) )
       while image_lists[index]['category'] != category:
         index = random.randrange(len(image_lists) )
 
+      # Retrieve the attributes of the example
       example = image_lists[index]
-
       file_path = example['path']
       labels = example['labels']
       temp_ground_truth = np.zeros(class_count)
@@ -596,18 +513,19 @@ def get_random_cached_bottlenecks(sess, image_lists, how_many, category,
       
       ground_truths.append(temp_ground_truth)
       filenames.append(image_name)
+
+  # Return all the examples in the category if the batch size < 0.
   else:
     # Retrieve all bottlenecks.
     for index in range(len(image_lists)):
       if image_lists[index]['category'] == category:
-        example = image_lists[index]
 
+        example = image_lists[index]
         file_path = example['path']
         labels = example['labels']
         temp_ground_truth = np.zeros(class_count)
         temp_ground_truth[labels] = 1
         label_name = '_'.join([str(label) for label in labels])      
-
         image_name = file_path
 
         bottleneck = get_or_create_bottleneck(
@@ -833,18 +751,21 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
     ground_truth_input = tf.placeholder(
         tf.float32, [batch_size, class_count], name='GroundTruthInput') #
 
+  # hyperparameter to tune the relative scale of L2 regularization loss
   l2_scale = 0.001
 
+  # FC layer from layer size 2048 to 256, followed by dropout layer
   with tf.name_scope("dense1"):
     x = tf.layers.dense(inputs=bottleneck_input, units=256, activation=tf.nn.relu,
                          kernel_regularizer= tf.contrib.layers.l2_regularizer(scale=l2_scale))
-    x = tf.layers.dropout(inputs=x, rate=0.5, training=is_training)#, training=mode == tf.estimator.ModeKeys.TRAIN)
-  
-  # Logits Layer
+    x = tf.layers.dropout(inputs=x, rate=0.5, training=is_training)
+
+  # Logits Layer: from layer size 256 to 28
   with tf.name_scope("logit"):
     logits = tf.layers.dense(inputs=x, units=28, kernel_regularizer= tf.contrib.layers.l2_regularizer(scale=l2_scale))
 
-  final_tensor = tf.nn.sigmoid(logits)#tf.nn.softmax(logits, name=final_tensor_name, axis=1)
+  # sigmoid function applied to the logits
+  final_tensor = tf.nn.sigmoid(logits)
 
   # The tf.contrib.quantize functions rewrite the graph in place for
   # quantization. The imported model graph has already been rewritten, so upon
@@ -863,19 +784,20 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
     return None, None, bottleneck_input, ground_truth_input, final_tensor
 
   with tf.name_scope('cross_entropy'):
-    cross_entropy_mean = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(#tf.losses.sparse_softmax_cross_entropy(
+    cross_entropy_mean = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(
         labels=ground_truth_input, logits=logits))
   tf.summary.scalar('cross_entropy', cross_entropy_mean)
 
-  # ADDED
+  # F1 loss
   with tf.name_scope('f1_loss'):
     f1_loss_value = f1_loss(ground_truth_input, final_tensor)
   tf.summary.scalar('f1_loss_value', f1_loss_value)
   l2_loss = tf.losses.get_regularization_loss()
   f1_loss_value += l2_loss
 
+  # Optimizer
   with tf.name_scope('train'):
-    optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate) #tf.train.GradientDescentOptimizer(FLAGS.learning_rate)
+    optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate) 
     train_step = optimizer.minimize(f1_loss_value)
 
   return (train_step, cross_entropy_mean, f1_loss_value, bottleneck_input, ground_truth_input,
@@ -883,7 +805,7 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
 
 
 def add_evaluation_step(result_tensor, ground_truth_tensor):
-  """Inserts the operations we need to evaluate the accuracy of our results.
+  """Inserts the operations we need to evaluate the metric of our results.
 
   Args:
     result_tensor: The new final node that produces results.
@@ -893,15 +815,6 @@ def add_evaluation_step(result_tensor, ground_truth_tensor):
   Returns:
     Tuple of (evaluation step, prediction).
   """
-  # with tf.name_scope('accuracy'):
-  #   with tf.name_scope('correct_prediction'):
-  #     prediction = tf.argmax(result_tensor, 1)
-  #     correct_prediction = tf.equal(prediction, ground_truth_tensor)
-  #   with tf.name_scope('accuracy'):
-  #     evaluation_step = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-  # tf.summary.scalar('accuracy', evaluation_step)
-  # return evaluation_step, prediction
-
 
   with tf.name_scope('accuracy'):    
     f1_score = f1(ground_truth_tensor, result_tensor)
@@ -1056,7 +969,7 @@ def main(_):
   # Prepare necessary directories that can be used during training
   prepare_file_system()
 
-  # Set up the metadata -- filename-label match
+  # Set up the metadata: filename-label match
   data = pd.read_csv(FLAGS.metadata_file)
   metadata = []
   for filename, labels in zip(data['Id'], data['Target'].str.split(' ')):
@@ -1065,13 +978,13 @@ def main(_):
           'labels': np.array([int(label) for label in labels]),
           'category': None
           })
-  # metadata = np.array(metadata)
+
   image_lists = metadata
   image_dims = [299, 299, 3]
 
   dh = DataHandler(metadata, image_dims, FLAGS.train_batch_size)
     
-  # hard-coded in
+  # 28 classes of proteins 
   class_count = 28
 
   # See if the command-line flags mean we're applying any distortions.
@@ -1083,6 +996,8 @@ def main(_):
   module_spec = hub.load_module_spec(FLAGS.tfhub_module)
   graph, bottleneck_tensor, resized_image_tensor, wants_quantization = (
       create_module_graph(module_spec))
+
+  # TENSOR DIMENSIONS
 
   # resized_image_tensor = [None, height, width, 3]
   # bottleneck_tensor = [None, V]
@@ -1256,17 +1171,12 @@ def main(_):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
 
-
-# added 
   parser.add_argument(
       '--metadata_file',
       type=str,
       default='../data/train.csv',
       help='Path to the metadata file (csv) containing training labels.'
   )
-
-# end of added
-
 
   parser.add_argument(
       '--image_dir',
